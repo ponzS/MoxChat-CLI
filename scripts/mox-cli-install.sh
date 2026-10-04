@@ -21,7 +21,7 @@ cleanup() {
 touch "$run_dir/.mox-install-owned"
 trap cleanup EXIT
 trap 'exit 130' INT TERM
-fetch() { curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 300 --retry 2 -fsSL "$1" -o "$2"; }
+fetch() { curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 900 --retry 2 -fsSL "$1" -o "$2"; }
 tag=${MOX_VERSION:-}
 if [ -z "$tag" ]; then
   latest=$(curl --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 -fsSL -o /dev/null -w '%{url_effective}' "$repository/releases/latest")

@@ -9,7 +9,9 @@ fn main() {
     let checksum = runtime.join("SHA256SUMS");
     println!("cargo:rerun-if-changed={}", binary.display());
     println!("cargo:rerun-if-changed={}", checksum.display());
-    let bytes = fs::read(&binary).unwrap_or_else(|_| panic!("Missing bundled runtime for {target}. Check the supported platforms in README.md."));
+    let bytes = fs::read(&binary).unwrap_or_else(|_| {
+        panic!("Missing bundled runtime for {target}. Check the supported platforms in README.md.")
+    });
     let expected = fs::read_to_string(&checksum).expect("MLS runtime SHA256SUMS");
     let hash = format!("{:x}", Sha256::digest(&bytes));
     assert_eq!(
