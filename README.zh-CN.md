@@ -4,6 +4,8 @@
 
 Rust 编写的 MoxChat CLI / TUI，程序名 `mox`，当前版本 `0.1.1`。支持独立身份、好友、加密私聊、Group V2、附件和本机 Codex 自动回复。每个聊天拥有独立 Codex thread，采用电脑上 Codex 的默认模型配置。
 
+开发分支的新投递使用 `p256-sha256-ciphertext-v1` 密文签名，明文签名留在加密内容中。客户端和服务端需配套升级；历史对象保持原样读取，旧格式待发送任务转入 `failed_delivery` 并发出拒绝事件，需要用户重新发送，不在重试时改写。此变更尚未发布二进制。
+
 ## MoxChat 客户端
 
 - iOS：[在 App Store 下载](https://apps.apple.com/us/app/moxchat/id6775016915)

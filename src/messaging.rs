@@ -105,6 +105,17 @@ pub async fn flush(store: &SharedStore, api: &Api) -> Result<()> {
     let relays = bases(store)?;
     for (id, text) in pending {
         let v: Value = serde_json::from_str(&text)?;
+        if v["payload"]["sigAlg"] != crypto::CIPHERTEXT_SIGNATURE_ALG {
+            let s = store.lock().unwrap();
+            s.put(
+                "failed_delivery",
+                &id,
+                &json!({"envelope":v,"error":"encrypted_payload_upgrade_required"}),
+            )?;
+            s.db.execute("DELETE FROM outbox WHERE id=?", [&id])?;
+            s.event("delivery.rejected", json!({"envelopeId":id,"messageId":v["messageId"],"error":"encrypted_payload_upgrade_required"}))?;
+            continue;
+        }
         for base in &relays {
             match api
                 .request(base, Method::POST, &api.path("mesh/envelopes"), Some(&v))
@@ -313,10 +324,7 @@ pub async fn send_dm(store: &SharedStore, api: &Api, chat_id: &str, text: &str) 
         &peer,
         &mid,
         "dm",
-        crypto::SignedBody {
-            text: &plain,
-            signature: &sig,
-        },
+        crypto::SignedBody { text: &plain },
         &recipient_epub,
         now,
     )?;
@@ -362,7 +370,6 @@ pub async fn add_friend(
         "friend_request",
         crypto::SignedBody {
             text: &serde_jcs::to_string(&doc)?,
-            signature: string(&doc, "signature")?,
         },
         string(profile, "encryptionPub")?,
         now,
@@ -418,7 +425,6 @@ pub fn friend_decision(s: &Store, i: &Identity, rid: &str, kind: &str) -> Result
         kind,
         crypto::SignedBody {
             text: &serde_jcs::to_string(&doc)?,
-            signature: string(&doc, "signature")?,
         },
         &epub,
         now,
@@ -463,7 +469,8 @@ fn receive_control(s: &Store, i: &Identity, env: &Value) -> Result<()> {
             && doc["kind"] == kind
             && doc["requestId"] == rid
             && doc["senderEncryptionPub"] == env["payload"]["sender"]
-            && doc["signature"] == env["payload"]["signature"]
+            && (env["payload"]["sigAlg"] == crypto::CIPHERTEXT_SIGNATURE_ALG
+                || doc["signature"] == env["payload"]["signature"])
             && doc["createdAt"] == env["createdAt"],
         "好友控制消息绑定错误"
     );
@@ -628,15 +635,20 @@ async fn receive_dm(store: &SharedStore, api: &Api, item: &Value) -> Result<()> 
     let mid = string(&meta, "messageId")?;
     ensure!(
         payload["messageId"] == mid
-            && payload["sigAlg"] == "p256-sha256"
+            && (payload["sigAlg"] == "p256-sha256"
+                || payload["sigAlg"] == crypto::CIPHERTEXT_SIGNATURE_ALG)
             && meta["signature"]["v"] == 1
             && meta["signature"]["sigAlg"] == "p256-sha256"
-            && meta["signature"]["sig"] == payload["signature"],
+            && (payload["sigAlg"] == crypto::CIPHERTEXT_SIGNATURE_ALG
+                || meta["signature"]["sig"] == payload["signature"]),
         "消息签名元数据不匹配"
     );
+    if payload["sigAlg"] == crypto::CIPHERTEXT_SIGNATURE_ALG {
+        crypto::verify_ciphertext_payload(payload, peer, &i.public)?;
+    }
     crypto::verify_text(
         &chat_signature_text(text, mid, peer, &i.public),
-        string(payload, "signature")?,
+        string(&meta["signature"], "sig")?,
         peer,
     )?;
     let s = store.lock().unwrap();

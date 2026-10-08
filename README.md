@@ -4,6 +4,8 @@
 
 A Rust CLI and TUI for MoxChat, available as `mox`. The current version is `0.1.1`. It supports independent identities, friends, encrypted direct messages, Group V2, attachments, and automatic replies through a local Codex installation. Each conversation has its own Codex thread and uses the computer's default Codex model configuration.
 
+New deliveries on the development branch use `p256-sha256-ciphertext-v1`, with plaintext signatures inside encryption. Upgrade clients and servers together. Historical envelopes remain readable; old pending sends move to `failed_delivery` and emit a rejection event, requiring an explicit resend instead of rewriting retries. Updated binaries have not been released.
+
 ## MoxChat Clients
 
 - iOS: [Download on the App Store](https://apps.apple.com/us/app/moxchat/id6775016915)

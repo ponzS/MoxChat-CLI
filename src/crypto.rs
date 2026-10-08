@@ -182,7 +182,26 @@ pub fn string<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
 }
 pub struct SignedBody<'a> {
     pub text: &'a str,
-    pub signature: &'a str,
+}
+pub const CIPHERTEXT_SIGNATURE_ALG: &str = "p256-sha256-ciphertext-v1";
+fn ciphertext_projection(payload: &Value, from: &str, to: &str) -> Value {
+    json!({"version":1,"fromPub":from,"toPub":to,"ciphertext":payload["ciphertext"],
+        "iv":payload["iv"],"sender":payload["sender"],"timestamp":payload["timestamp"],"messageId":payload["messageId"]})
+}
+pub fn verify_ciphertext_payload(payload: &Value, from: &str, to: &str) -> Result<()> {
+    ensure!(
+        payload["sigAlg"] == CIPHERTEXT_SIGNATURE_ALG,
+        "Unsupported ciphertext signature version"
+    );
+    verify_digest(
+        from,
+        string(payload, "signature")?,
+        &digest(
+            "mox:mesh:ciphertext:v1",
+            &ciphertext_projection(payload, from, to),
+        )?,
+        true,
+    )
 }
 pub fn envelope(
     identity: &Identity,
@@ -195,7 +214,21 @@ pub fn envelope(
 ) -> Result<Value> {
     let mut payload = encrypt(body.text, &identity.epriv, recipient_epub)?;
     let obj = payload.as_object_mut().unwrap();
-    for (k,v) in json!({"sender":identity.epub,"timestamp":created,"messageId":message_id,"signature":body.signature,"sigAlg":"p256-sha256"}).as_object().unwrap(){obj.insert(k.clone(),v.clone());}
+    for (k, v) in json!({"sender":identity.epub,"timestamp":created,"messageId":message_id})
+        .as_object()
+        .unwrap()
+    {
+        obj.insert(k.clone(), v.clone());
+    }
+    let signature = sign_digest(
+        &identity.private,
+        &digest(
+            "mox:mesh:ciphertext:v1",
+            &ciphertext_projection(&payload, &identity.public, to),
+        )?,
+    )?;
+    payload["signature"] = json!(signature);
+    payload["sigAlg"] = json!(CIPHERTEXT_SIGNATURE_ALG);
     let mut value = json!({"version":1,"kind":kind,"fromPub":identity.public,"toPub":to,"createdAt":created,"expiresAt":created+30*86400*1000,"messageId":message_id,"payload":payload});
     let d = digest("mox:mesh:envelope:v1", &value)?;
     value["envelopeId"] = json!(hex::encode(d));
@@ -218,7 +251,16 @@ pub fn verify_envelope(value: &Value) -> Result<()> {
         string(value, "senderSignature")?,
         &d,
         true,
-    )
+    )?;
+    match value["payload"]["sigAlg"].as_str() {
+        Some(CIPHERTEXT_SIGNATURE_ALG) => verify_ciphertext_payload(
+            &value["payload"],
+            string(value, "fromPub")?,
+            string(value, "toPub")?,
+        ),
+        Some("p256-sha256") => Ok(()), // Retained historical envelopes only.
+        _ => Err(anyhow!("Unsupported encrypted payload version")),
+    }
 }
 pub fn json_strict(text: &str) -> Result<Value> {
     // serde's Value parser overwrites duplicates. Detect them while visiting every object.
