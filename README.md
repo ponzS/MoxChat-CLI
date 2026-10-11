@@ -2,9 +2,9 @@
 
 [中文文档](./README.zh-CN.md)
 
-A Rust CLI and TUI for MoxChat, available as `mox`. The current version is `0.1.1`. It supports independent identities, friends, encrypted direct messages, Group V2, attachments, and automatic replies through a local Codex installation. Each conversation has its own Codex thread and uses the computer's default Codex model configuration.
+A Rust CLI and TUI for MoxChat, available as `mox`. The current version is `0.1.2`. It supports independent identities, friends, encrypted direct messages, Group V2, attachments, and automatic replies through a local Codex installation. Each conversation has its own Codex thread and uses the computer's default Codex model configuration.
 
-New deliveries on the development branch use `p256-sha256-ciphertext-v1`, with plaintext signatures inside encryption. Upgrade clients and servers together. Historical envelopes remain readable; old pending sends move to `failed_delivery` and emit a rejection event, requiring an explicit resend instead of rewriting retries. Updated binaries have not been released.
+New deliveries in version 0.1.2 use `p256-sha256-ciphertext-v1`, with plaintext signatures inside encryption. Upgrade clients and servers together. Historical envelopes remain readable; old pending sends move to `failed_delivery` and emit a rejection event, requiring an explicit resend instead of rewriting retries. The bundled MLS runtime remains compatible at protocol version 1.
 
 ## MoxChat Clients
 
@@ -201,7 +201,7 @@ Distributors can package a release on each target platform from the repository r
 scripts/mox-cli-build.sh --out /absolute/path/to/release-directory
 ```
 
-Upload the platform artifacts and their combined SHA-256 entries to the same `mox-v0.1.1` release. The script only builds and packages; it does not create tags or publish a remote release.
+Upload the platform artifacts and their combined SHA-256 entries to the same `mox-v0.1.2` release. The script only builds and packages; it does not create tags or publish a remote release.
 
 ## Manual Verification
 
