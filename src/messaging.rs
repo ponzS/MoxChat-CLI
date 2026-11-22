@@ -68,13 +68,13 @@ pub async fn publish(store: &SharedStore, api: &Api) -> Result<()> {
         body
     };
     for base in &relays {
-        api.request(
-            base,
-            Method::PUT,
-            &format!("{}?createSession=true", api.path("mesh/identity")),
-            Some(&body),
-        )
-        .await?;
+        let path = api.path("mesh/identity");
+        let path = if base.starts_with("http://") {
+            path
+        } else {
+            format!("{path}?createSession=true")
+        };
+        api.request(base, Method::PUT, &path, Some(&body)).await?;
     }
     if !store.lock().unwrap().list("group")?.is_empty() {
         crate::group::publish_inbox(store, api).await?;

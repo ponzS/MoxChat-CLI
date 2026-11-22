@@ -101,6 +101,21 @@ async fn operation(
     body: Option<&Value>,
     device: Option<&Value>,
 ) -> Result<Value> {
+    let (status, value) =
+        operation_response(store, api, target, method, path, body, device).await?;
+    require_operation_success(status, &value)?;
+    Ok(value)
+}
+
+async fn operation_response(
+    store: &SharedStore,
+    api: &Api,
+    target: &Value,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+    device: Option<&Value>,
+) -> Result<(u64, Value)> {
     let base = messaging::bases(store)?
         .into_iter()
         .next()
@@ -129,6 +144,10 @@ async fn operation(
     let response=api.request(&base,Method::POST,&api.path("groups/v2/operations"),Some(&json!({"payload":payload,"signature":crypto::sign_digest(&api.identity.private,&digest)?,"deviceProof":proof}))).await?;
     let status = response["status"].as_u64().context("无效群操作响应")?;
     let value = crypto::json_strict(string(&response, "body")?)?;
+    Ok((status, value))
+}
+
+fn require_operation_success(status: u64, value: &Value) -> Result<()> {
     ensure!(
         (200..300).contains(&status),
         "GROUP_ERROR: HTTP {status} {}",
@@ -137,7 +156,7 @@ async fn operation(
             .or(value["code"].as_str())
             .unwrap_or("群操作失败")
     );
-    Ok(value)
+    Ok(())
 }
 async fn publish_device(
     store: &SharedStore,
@@ -965,6 +984,23 @@ async fn sync_group(store: &SharedStore, api: &Api, group: Value) -> Result<()> 
         .context("Missing relay identity")?;
     let target = json!({"nodeId":pin["nodeId"],"serverPub":pin["serverPub"],"baseUrl":base});
     publish_device(store, api, &target, &device).await?;
+    let (binding_status, binding) = operation_response(
+        store,
+        api,
+        &target,
+        "PUT",
+        &format!("{gid}/inbox-home"),
+        Some(&json!({
+            "version": 1,
+            "groupOwnerPub": group["descriptor"]["ownerPub"],
+            "relaySet": group["relaySet"],
+        })),
+        Some(&device),
+    )
+    .await?;
+    if binding_status != 404 || binding["code"] != "not_found" {
+        require_operation_success(binding_status, &binding)?;
+    }
     let response = operation(
         store,
         api,

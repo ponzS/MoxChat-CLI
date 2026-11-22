@@ -5,6 +5,9 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
+const SIGNED_SESSION_PATH: &str = "/api/secure/signed-session";
+const SIGNED_TOKEN_PREFIX: &str = "moxs1.";
+
 #[derive(Clone)]
 pub struct Api {
     pub client: Client,
@@ -37,8 +40,12 @@ impl Api {
         {
             return Ok(());
         }
-        self.request(base, Method::POST, "/api/secure/session", Some(&json!({})))
-            .await?;
+        if base.starts_with("http://") {
+            self.acquire_signed_session(base).await?;
+        } else {
+            self.request(base, Method::POST, "/api/secure/session", Some(&json!({})))
+                .await?;
+        }
         Ok(())
     }
     pub fn new(identity: Identity) -> Result<Self> {
@@ -94,6 +101,9 @@ impl Api {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value> {
+        if base.starts_with("http://") {
+            return self.request_signed(base, method, path, body).await;
+        }
         let cached = self
             .sessions
             .lock()
@@ -167,6 +177,134 @@ impl Api {
                 .insert(base.into(), (token.into(), exp));
         }
         Ok(v)
+    }
+
+    async fn acquire_signed_session(&self, base: &str) -> Result<String> {
+        let url = format!("{base}{SIGNED_SESSION_PATH}");
+        let build = || {
+            self.client
+                .post(&url)
+                .header("X-Mox-Pub", &self.identity.public)
+        };
+        let (status, challenge) = self.decode(build().send().await?).await?;
+        ensure!(
+            status == StatusCode::UNAUTHORIZED && challenge["type"] == "challenge",
+            "HTTP 中继需要升级以支持签名会话"
+        );
+        let challenge_id = string(&challenge, "challengeId")?;
+        let encrypted = &challenge["challenge"];
+        let code = crypto::decrypt(
+            encrypted,
+            &self.identity.private,
+            string(encrypted, "sender")?,
+        )?;
+        let payload = json!([challenge_id, code, self.identity.public, "", ""]);
+        let signature = crypto::sign_digest(
+            &self.identity.private,
+            &crypto::digest("mox:account:session-issue:v1", &payload)?,
+        )?;
+        let (status, response) = self
+            .decode(
+                build()
+                    .header("X-Mox-Challenge-Id", challenge_id)
+                    .header("X-Mox-Account-Proof", signature)
+                    .send()
+                    .await?,
+            )
+            .await?;
+        ensure!(status.is_success(), "HTTP 中继签名会话认证失败");
+        let token = string(&response, "token")?;
+        let expires_at = response["expiresAt"]
+            .as_u64()
+            .context("Missing session expiry")?;
+        ensure!(
+            token.starts_with(SIGNED_TOKEN_PREFIX) && expires_at > crypto::now() + 5000,
+            "HTTP 中继签名会话无效"
+        );
+        self.sessions
+            .lock()
+            .await
+            .insert(base.to_owned(), (token.to_owned(), expires_at));
+        Ok(token.to_owned())
+    }
+
+    async fn request_signed(
+        &self,
+        base: &str,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value> {
+        let url = Url::parse(&format!("{base}{path}"))?;
+        let target = match url.query() {
+            Some(query) => format!("{}?{query}", url.path()),
+            None => url.path().to_owned(),
+        };
+        let serialized = body.map(serde_json::to_string).transpose()?;
+        let body_hash = crypto::hash(serialized.as_deref().unwrap_or_default());
+        let cached = self
+            .sessions
+            .lock()
+            .await
+            .get(base)
+            .filter(|(token, expires)| {
+                token.starts_with(SIGNED_TOKEN_PREFIX) && *expires > crypto::now() + 5000
+            })
+            .map(|(token, _)| token.clone());
+        let mut token = match cached {
+            Some(token) => token,
+            None => self.acquire_signed_session(base).await?,
+        };
+        for attempt in 0..2 {
+            let nonce = crypto::b64(crypto::random::<16>());
+            let now = crypto::now();
+            let payload = json!([
+                token,
+                self.identity.public,
+                "",
+                nonce,
+                now,
+                method.as_str(),
+                target,
+                body_hash
+            ]);
+            let signature = crypto::sign_digest(
+                &self.identity.private,
+                &crypto::digest("mox:account:session-request:v1", &payload)?,
+            )?;
+            let mut request = self
+                .client
+                .request(method.clone(), url.clone())
+                .header("X-Mox-Pub", &self.identity.public)
+                .header("Authorization", format!("Mox-Signed {token}"))
+                .header("X-Mox-Account-Nonce", nonce)
+                .header("X-Mox-Account-Time", now)
+                .header("X-Mox-Account-Proof", signature);
+            if let Some(body) = &serialized {
+                request = request
+                    .header("Content-Type", "application/json")
+                    .body(body.clone());
+            }
+            let (status, response) = self.decode(request.send().await?).await?;
+            if status == StatusCode::UNAUTHORIZED
+                && attempt == 0
+                && response["message"] == "signed_session_invalid"
+            {
+                token = self.acquire_signed_session(base).await?;
+                continue;
+            }
+            ensure!(
+                status.is_success(),
+                "RELAY_ERROR: HTTP {} {}",
+                status.as_u16(),
+                response
+                    .get("message")
+                    .or(response.get("code"))
+                    .unwrap_or(&json!("Request failed"))
+            );
+            return Ok(response);
+        }
+        unreachable!("signed request completes on the last iteration")
     }
     pub async fn advertisement(&self, base: &str) -> Result<Value> {
         let (status, v) = self
